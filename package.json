@@ -9,9 +9,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "crypto-js": "^4.2.0",
+    "hashids": "^2.3.0",
     "mysql2": "^3.11.0"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/crypto-js": "^4.2.2"
   }
 }

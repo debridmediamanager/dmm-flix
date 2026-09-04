@@ -5,11 +5,24 @@ import { describe, it, expect, afterEach, mock } from "bun:test";
 // ---------------------------------------------------------------------------
 let mockQueryResult: any[] = [[], []];
 
+let mockDbShouldThrow = false;
+
 mock.module("../db", () => ({
   getPool: () => ({
-    query: async (..._args: any[]) => mockQueryResult,
+    query: async (..._args: any[]) => {
+      if (mockDbShouldThrow) throw new Error("DB unavailable");
+      return mockQueryResult;
+    },
   }),
   ensureContentTable: async () => {},
+}));
+
+mock.module("../config", () => ({
+  config: {
+    port: 7001,
+    tmdbApiKey: "test-tmdb-key",
+    db: { host: "localhost", port: 3306, user: "root", password: "", database: "test" },
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -27,6 +40,7 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   mockQueryResult = [[], []];
+  mockDbShouldThrow = false;
 });
 
 /**
@@ -243,10 +257,49 @@ describe("handleStream", () => {
   it("returns empty streams for unknown IMDB ID", async () => {
     mockQueryResult = [[], []];
 
+    // TMDB find also returns nothing
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("/find/")) {
+        return new Response(
+          JSON.stringify({ movie_results: [], tv_results: [] })
+        );
+      }
+      return new Response("Not Found", { status: 404 });
+    }) as typeof fetch;
+
     const response = await handleStream("movie", "tt9999999");
     const body = await response.json();
 
     expect(body.streams).toEqual([]);
+  });
+
+  it("falls back to TMDB API when DB is unavailable", async () => {
+    mockDbShouldThrow = true;
+
+    const embedHtml = makeEmbedHtml(TEST_SERVERS);
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input);
+      // TMDB find endpoint returns Fight Club
+      if (url.includes("/find/tt0137523")) {
+        return new Response(
+          JSON.stringify({
+            movie_results: [{ id: 550, title: "Fight Club" }],
+            tv_results: [],
+          })
+        );
+      }
+      if (url.includes("/api/e/")) {
+        return new Response(JSON.stringify(STREAM_RESPONSE));
+      }
+      return new Response(embedHtml, { status: 200 });
+    }) as typeof fetch;
+
+    const response = await handleStream("movie", "tt0137523");
+    const body = await response.json();
+
+    expect(body.streams).toHaveLength(2);
+    expect(body.streams[0].url).toBe(STREAM_RESPONSE.source);
   });
 
   it("returns empty streams for invalid ID format", async () => {
@@ -305,8 +358,14 @@ describe("handleStream", () => {
   it("returns empty streams when embed.su fails", async () => {
     mockQueryResult = [[{ tmdb_id: 550, title: "Fight Club" }], []];
 
-    globalThis.fetch = (async () =>
-      new Response("Service Unavailable", { status: 503 })) as typeof fetch;
+    globalThis.fetch = (async (input: any) => {
+      const url = String(input);
+      // DB succeeds so TMDB find won't be called, but embed.su fails
+      if (url.includes("embed.su")) {
+        return new Response("Service Unavailable", { status: 503 });
+      }
+      return new Response("Not Found", { status: 404 });
+    }) as typeof fetch;
 
     const response = await handleStream("movie", "tt0137523");
     const body = await response.json();
